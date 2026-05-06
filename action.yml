@@ -1,0 +1,165 @@
+name: segspec
+description: Static config-to-NetworkPolicy extractor. Runs on the GitHub-hosted runner. Configs never leave your CI.
+author: Dor Morgenstern
+
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  path:
+    description: Directory or GitHub URL to analyze.
+    required: true
+    default: "."
+  format:
+    description: "Output format: summary | netpol | per-service | default-deny | audit | cilium | all | evidence | evidence-bundle | evidence-bundle-sarif | json. evidence, evidence-bundle, evidence-bundle-sarif, and per-service require a license."
+    required: false
+    default: summary
+  baseline:
+    description: Path to a baseline JSON file. When set, runs `segspec diff <baseline> <path>` instead of `analyze`. Requires a license.
+    required: false
+    default: ""
+  exit-code:
+    description: Fail the action when diff detects changes (only valid with baseline). Requires a license.
+    required: false
+    default: "false"
+  license-key:
+    description: License key for paid features. Falls back to env var SEGSPEC_LICENSE_KEY. Required for evidence, per-service, baseline diff, and exit-code.
+    required: false
+    default: ""
+  version:
+    description: segspec release tag to install (e.g. v0.5.0). Defaults to "latest".
+    required: false
+    default: latest
+  output-file:
+    description: Write structured output to this file. Falls through to segspec --output.
+    required: false
+    default: ""
+
+outputs:
+  exit-code:
+    description: Exit code of the segspec invocation. 0 = success, 1 = changes detected (with --exit-code), other = error.
+    value: ${{ steps.run.outputs.exit-code }}
+  output-file:
+    description: Path to the output file, if --output-file was provided.
+    value: ${{ steps.run.outputs.output-file }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve license + paid-tier gates
+      id: gate
+      shell: bash
+      env:
+        INPUT_FORMAT: ${{ inputs.format }}
+        INPUT_BASELINE: ${{ inputs.baseline }}
+        INPUT_EXIT_CODE: ${{ inputs.exit-code }}
+        INPUT_LICENSE_KEY: ${{ inputs.license-key }}
+        ENV_LICENSE_KEY: ${{ env.SEGSPEC_LICENSE_KEY }}
+      run: |
+        set -euo pipefail
+
+        license="${INPUT_LICENSE_KEY:-${ENV_LICENSE_KEY:-}}"
+        paid_reason=""
+
+        case "${INPUT_FORMAT}" in
+          evidence|per-service|evidence-bundle|evidence-bundle-sarif)
+            paid_reason="format=${INPUT_FORMAT}"
+            ;;
+        esac
+
+        if [ -n "${INPUT_BASELINE}" ]; then
+          paid_reason="${paid_reason:+$paid_reason, }baseline diff"
+        fi
+
+        if [ "${INPUT_EXIT_CODE}" = "true" ]; then
+          paid_reason="${paid_reason:+$paid_reason, }exit-code"
+        fi
+
+        if [ -n "${paid_reason}" ] && [ -z "${license}" ]; then
+          echo "::error title=segspec license required::This invocation requires a license (${paid_reason}). Set the license-key input or the SEGSPEC_LICENSE_KEY env var. See https://segspec.dev/pricing"
+          exit 78
+        fi
+
+        echo "license=${license}" >> "$GITHUB_OUTPUT"
+        echo "paid_reason=${paid_reason}" >> "$GITHUB_OUTPUT"
+
+    - name: Detect runner platform
+      id: platform
+      shell: bash
+      run: |
+        set -euo pipefail
+        os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+        arch_raw="$(uname -m)"
+        case "${arch_raw}" in
+          x86_64|amd64) arch=amd64 ;;
+          arm64|aarch64) arch=arm64 ;;
+          *) echo "::error::Unsupported runner arch: ${arch_raw}"; exit 1 ;;
+        esac
+        case "${os}" in
+          linux|darwin) ;;
+          *) echo "::error::Unsupported runner OS: ${os}. segspec Action supports linux and darwin runners only."; exit 1 ;;
+        esac
+        echo "os=${os}"   >> "$GITHUB_OUTPUT"
+        echo "arch=${arch}" >> "$GITHUB_OUTPUT"
+
+    - name: Download segspec binary
+      id: install
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        OS:   ${{ steps.platform.outputs.os }}
+        ARCH: ${{ steps.platform.outputs.arch }}
+      run: |
+        set -euo pipefail
+        bindir="${RUNNER_TEMP}/segspec-bin"
+        mkdir -p "${bindir}"
+        if [ "${VERSION}" = "latest" ]; then
+          url="https://github.com/dormstern/segspec/releases/latest/download/segspec-${OS}-${ARCH}"
+        else
+          url="https://github.com/dormstern/segspec/releases/download/${VERSION}/segspec-${OS}-${ARCH}"
+        fi
+        echo "Fetching ${url}"
+        curl -fsSL "${url}" -o "${bindir}/segspec"
+        chmod +x "${bindir}/segspec"
+        echo "${bindir}" >> "$GITHUB_PATH"
+        echo "bindir=${bindir}" >> "$GITHUB_OUTPUT"
+
+    - name: Run segspec
+      id: run
+      shell: bash
+      env:
+        SEGSPEC_LICENSE_KEY: ${{ steps.gate.outputs.license }}
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_FORMAT: ${{ inputs.format }}
+        INPUT_BASELINE: ${{ inputs.baseline }}
+        INPUT_EXIT_CODE: ${{ inputs.exit-code }}
+        INPUT_OUTPUT_FILE: ${{ inputs.output-file }}
+      run: |
+        set -uo pipefail
+
+        args=()
+        if [ -n "${INPUT_BASELINE}" ]; then
+          args=(diff "${INPUT_BASELINE}" "${INPUT_PATH}")
+          if [ "${INPUT_EXIT_CODE}" = "true" ]; then
+            args+=(--exit-code)
+          fi
+        else
+          args=(analyze "${INPUT_PATH}" --format "${INPUT_FORMAT}")
+        fi
+
+        if [ -n "${INPUT_OUTPUT_FILE}" ]; then
+          args+=(--output "${INPUT_OUTPUT_FILE}")
+        fi
+
+        echo "+ segspec ${args[*]}"
+        set +e
+        segspec "${args[@]}"
+        rc=$?
+        set -e
+
+        echo "exit-code=${rc}" >> "$GITHUB_OUTPUT"
+        echo "output-file=${INPUT_OUTPUT_FILE}" >> "$GITHUB_OUTPUT"
+
+        # Propagate non-zero exits faithfully so consumers see the real status.
+        exit "${rc}"

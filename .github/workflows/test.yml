@@ -1,0 +1,109 @@
+name: self-test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  free-summary:
+    name: free summary on fixture
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run action (summary, no license)
+        uses: ./
+        with:
+          path: examples/compose-2service
+          format: summary
+          output-file: summary.txt
+      - name: Assert summary mentions postgres
+        run: |
+          set -euo pipefail
+          test -s summary.txt
+          grep -qi postgres summary.txt
+      - name: Assert "no dependencies" sentinel is absent
+        run: |
+          set -euo pipefail
+          if grep -qi "no network dependencies found" summary.txt; then
+            echo "Expected dependencies in fixture, got the empty-result sentinel"
+            cat summary.txt
+            exit 1
+          fi
+
+  free-json-deps-nonempty:
+    name: free json finds at least one dependency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run action (json, no license)
+        uses: ./
+        with:
+          path: examples/compose-2service
+          format: json
+          output-file: deps.json
+      - name: Assert json has non-empty dependencies array
+        run: |
+          set -euo pipefail
+          test -s deps.json
+          # The JSON renderer emits {"service_name":"...","dependencies":[...]}.
+          # Use python because jq is not guaranteed on every runner image (and
+          # python is — it ships with ubuntu-latest).
+          python3 - <<'PY'
+          import json, sys
+          with open("deps.json") as f:
+              data = json.load(f)
+          deps = data.get("dependencies") or []
+          if not deps:
+              print("Expected at least one dependency, got:", json.dumps(data))
+              sys.exit(1)
+          print(f"OK: {len(deps)} dependency(ies) found")
+          PY
+
+  paid-gate-without-license-fails:
+    name: paid feature without license must fail
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Request evidence format without a license
+        id: gated
+        continue-on-error: true
+        uses: ./
+        with:
+          path: examples/compose-2service
+          format: evidence
+      - name: Assert the step failed (license gate fired)
+        env:
+          OUTCOME: ${{ steps.gated.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$OUTCOME" != "failure" ]; then
+            echo "Expected paid-tier gate to fail without a license, got: $OUTCOME"
+            exit 1
+          fi
+
+  diff-detects-changes:
+    name: diff against baseline detects changes
+    runs-on: ubuntu-latest
+    if: ${{ secrets.SEGSPEC_LICENSE_KEY != '' }}
+    env:
+      SEGSPEC_LICENSE_KEY: ${{ secrets.SEGSPEC_LICENSE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Diff fixture vs. stale baseline (expect non-zero)
+        id: diff
+        continue-on-error: true
+        uses: ./
+        with:
+          path: examples/compose-2service
+          baseline: examples/compose-2service/baseline.json
+          exit-code: "true"
+      - name: Assert diff exit code is 1
+        env:
+          RC: ${{ steps.diff.outputs.exit-code }}
+        run: |
+          set -euo pipefail
+          if [ "$RC" != "1" ]; then
+            echo "Expected exit-code=1 from diff, got: $RC"
+            exit 1
+          fi
