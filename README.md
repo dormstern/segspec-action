@@ -129,7 +129,7 @@ git add deps-baseline.json && git commit -m "refresh segspec baseline"
 
 ## Example: publish evidence to the Security tab (paid)
 
-`evidence-bundle-sarif` emits SARIF that GitHub renders as code-scanning alerts, so each network dependency lands in the **Security → Code scanning** tab with its source `file:line`.
+`evidence-bundle-sarif` emits SARIF that GitHub renders as code-scanning alerts, so each network dependency lands in the **Security → Code scanning** tab with the source file and the exact config line behind it.
 
 ![segspec evidence output showing the config line behind each dependency](https://raw.githubusercontent.com/dormstern/segspec/main/docs/demos/evidence-demo.gif)
 
