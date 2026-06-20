@@ -12,7 +12,7 @@ inputs:
     required: true
     default: "."
   format:
-    description: "Output format: summary | netpol | per-service | default-deny | audit | cilium | all | evidence | evidence-bundle | evidence-bundle-sarif | json. evidence, evidence-bundle, evidence-bundle-sarif, and per-service require a license."
+    description: "Output format: summary | netpol | per-service | default-deny | audit | cilium | all | evidence | evidence-bundle | evidence-bundle-sarif | json. evidence, per-service, evidence-bundle, and evidence-bundle-sarif require a license."
     required: false
     default: summary
   baseline:
@@ -28,26 +28,37 @@ inputs:
     required: false
     default: ""
   version:
-    description: segspec release tag to install (e.g. v0.5.0). Defaults to "latest".
+    description: segspec release tag to install (e.g. v0.6.0). Defaults to "latest".
     required: false
     default: latest
   output-file:
     description: Write structured output to this file. Falls through to segspec --output.
     required: false
     default: ""
+  annotate:
+    description: Write a run summary to the GitHub job summary and emit annotations for detected changes.
+    required: false
+    default: "true"
+  github-token:
+    description: Token used only to resolve the latest release tag via the GitHub API (avoids unauthenticated rate limits). Read-only; defaults to the workflow token.
+    required: false
+    default: ${{ github.token }}
 
 outputs:
   exit-code:
     description: Exit code of the segspec invocation. 0 = success, 1 = changes detected (with --exit-code), other = error.
     value: ${{ steps.run.outputs.exit-code }}
   output-file:
-    description: Path to the output file, if --output-file was provided.
+    description: Path to the output file, if output-file was provided.
     value: ${{ steps.run.outputs.output-file }}
+  version:
+    description: The resolved segspec version that was installed.
+    value: ${{ steps.install.outputs.version }}
 
 runs:
   using: composite
   steps:
-    - name: Resolve license + paid-tier gates
+    - name: Resolve paid-tier gates
       id: gate
       shell: bash
       env:
@@ -59,6 +70,8 @@ runs:
       run: |
         set -euo pipefail
 
+        # Resolve the license without writing it to a step output (step outputs
+        # are not masked and could leak the key into logs/summaries).
         license="${INPUT_LICENSE_KEY:-${ENV_LICENSE_KEY:-}}"
         paid_reason=""
 
@@ -67,22 +80,19 @@ runs:
             paid_reason="format=${INPUT_FORMAT}"
             ;;
         esac
-
         if [ -n "${INPUT_BASELINE}" ]; then
           paid_reason="${paid_reason:+$paid_reason, }baseline diff"
         fi
-
         if [ "${INPUT_EXIT_CODE}" = "true" ]; then
           paid_reason="${paid_reason:+$paid_reason, }exit-code"
         fi
 
         if [ -n "${paid_reason}" ] && [ -z "${license}" ]; then
-          echo "::error title=segspec license required::This invocation requires a license (${paid_reason}). Set the license-key input or the SEGSPEC_LICENSE_KEY env var. See https://segspec.dev/pricing"
+          echo "::error title=segspec license required::This invocation requires a license (${paid_reason}). Set the license-key input or the SEGSPEC_LICENSE_KEY secret. See https://segspec.dev/pricing"
           exit 78
         fi
-
-        echo "license=${license}" >> "$GITHUB_OUTPUT"
-        echo "paid_reason=${paid_reason}" >> "$GITHUB_OUTPUT"
+        # Only the boolean fact of whether a paid run was requested is exported.
+        echo "paid=${paid_reason:+true}" >> "$GITHUB_OUTPUT"
 
     - name: Detect runner platform
       id: platform
@@ -97,69 +107,113 @@ runs:
           *) echo "::error::Unsupported runner arch: ${arch_raw}"; exit 1 ;;
         esac
         case "${os}" in
-          linux|darwin) ;;
-          *) echo "::error::Unsupported runner OS: ${os}. segspec Action supports linux and darwin runners only."; exit 1 ;;
+          linux|darwin) ext="tar.gz" ;;
+          *) echo "::error title=segspec unsupported runner::segspec-action supports linux and darwin runners. Windows support is tracked at https://github.com/dormstern/segspec-action/issues. Detected OS: ${os}"; exit 1 ;;
         esac
-        echo "os=${os}"   >> "$GITHUB_OUTPUT"
+        echo "os=${os}"     >> "$GITHUB_OUTPUT"
         echo "arch=${arch}" >> "$GITHUB_OUTPUT"
+        echo "ext=${ext}"   >> "$GITHUB_OUTPUT"
 
-    - name: Download segspec binary
+    - name: Download and verify segspec
       id: install
       shell: bash
       env:
         VERSION: ${{ inputs.version }}
-        OS:   ${{ steps.platform.outputs.os }}
+        OS: ${{ steps.platform.outputs.os }}
         ARCH: ${{ steps.platform.outputs.arch }}
+        EXT: ${{ steps.platform.outputs.ext }}
+        GH_TOKEN: ${{ inputs.github-token }}
       run: |
         set -euo pipefail
-        bindir="${RUNNER_TEMP}/segspec-bin"
-        mkdir -p "${bindir}"
+        repo="dormstern/segspec"
+
+        # Resolve "latest" to a concrete tag (goreleaser archive names embed the version).
         if [ "${VERSION}" = "latest" ]; then
-          url="https://github.com/dormstern/segspec/releases/latest/download/segspec-${OS}-${ARCH}"
+          auth=()
+          if [ -n "${GH_TOKEN:-}" ]; then auth=(-H "Authorization: Bearer ${GH_TOKEN}"); fi
+          tag="$(curl -fsSL "${auth[@]}" "https://api.github.com/repos/${repo}/releases/latest" \
+                 | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
+          if [ -z "${tag}" ]; then echo "::error::Could not resolve the latest segspec release."; exit 1; fi
         else
-          url="https://github.com/dormstern/segspec/releases/download/${VERSION}/segspec-${OS}-${ARCH}"
+          tag="${VERSION}"
         fi
-        echo "Fetching ${url}"
-        curl -fsSL "${url}" -o "${bindir}/segspec"
+        ver="${tag#v}"
+        asset="segspec_${ver}_${OS}_${ARCH}.${EXT}"
+        base="https://github.com/${repo}/releases/download/${tag}"
+
+        tmp="${RUNNER_TEMP}/segspec-dl"; mkdir -p "${tmp}"
+        echo "Downloading ${asset} from ${tag}"
+        curl -fsSL "${base}/${asset}"       -o "${tmp}/${asset}"
+        curl -fsSL "${base}/checksums.txt"  -o "${tmp}/checksums.txt"
+
+        # Fail-closed sha256 verification: a security tool must never exec an
+        # unverified download on the consumer's runner.
+        expected="$(grep -E "[[:space:]]${asset}\$" "${tmp}/checksums.txt" | awk '{print $1}' | head -n1)"
+        if [ -z "${expected}" ]; then echo "::error title=segspec checksum missing::No checksum entry for ${asset} in checksums.txt"; exit 1; fi
+        if command -v sha256sum >/dev/null 2>&1; then
+          actual="$(sha256sum "${tmp}/${asset}" | awk '{print $1}')"
+        else
+          actual="$(shasum -a 256 "${tmp}/${asset}" | awk '{print $1}')"
+        fi
+        if [ "${expected}" != "${actual}" ]; then
+          echo "::error title=segspec checksum mismatch::expected ${expected}, got ${actual} for ${asset}"
+          exit 1
+        fi
+        echo "Checksum verified: ${actual}"
+
+        bindir="${RUNNER_TEMP}/segspec-bin"; mkdir -p "${bindir}"
+        tar -xzf "${tmp}/${asset}" -C "${bindir}"
         chmod +x "${bindir}/segspec"
         echo "${bindir}" >> "$GITHUB_PATH"
-        echo "bindir=${bindir}" >> "$GITHUB_OUTPUT"
+        echo "version=${ver}" >> "$GITHUB_OUTPUT"
 
     - name: Run segspec
       id: run
       shell: bash
       env:
-        SEGSPEC_LICENSE_KEY: ${{ steps.gate.outputs.license }}
+        SEGSPEC_LICENSE_KEY: ${{ inputs.license-key != '' && inputs.license-key || env.SEGSPEC_LICENSE_KEY }}
         INPUT_PATH: ${{ inputs.path }}
         INPUT_FORMAT: ${{ inputs.format }}
         INPUT_BASELINE: ${{ inputs.baseline }}
         INPUT_EXIT_CODE: ${{ inputs.exit-code }}
         INPUT_OUTPUT_FILE: ${{ inputs.output-file }}
+        INPUT_ANNOTATE: ${{ inputs.annotate }}
       run: |
         set -uo pipefail
 
         args=()
         if [ -n "${INPUT_BASELINE}" ]; then
           args=(diff "${INPUT_BASELINE}" "${INPUT_PATH}")
-          if [ "${INPUT_EXIT_CODE}" = "true" ]; then
-            args+=(--exit-code)
-          fi
+          if [ "${INPUT_EXIT_CODE}" = "true" ]; then args+=(--exit-code); fi
         else
           args=(analyze "${INPUT_PATH}" --format "${INPUT_FORMAT}")
         fi
+        if [ -n "${INPUT_OUTPUT_FILE}" ]; then args+=(--output "${INPUT_OUTPUT_FILE}"); fi
 
-        if [ -n "${INPUT_OUTPUT_FILE}" ]; then
-          args+=(--output "${INPUT_OUTPUT_FILE}")
-        fi
-
+        out="${RUNNER_TEMP}/segspec-out.txt"
         echo "+ segspec ${args[*]}"
         set +e
-        segspec "${args[@]}"
-        rc=$?
+        segspec "${args[@]}" | tee "${out}"
+        rc=${PIPESTATUS[0]}
         set -e
+
+        if [ "${INPUT_ANNOTATE}" = "true" ]; then
+          {
+            echo "### segspec"
+            echo ""
+            echo "\`segspec ${args[*]}\` exited \`${rc}\`"
+            echo ""
+            echo '```'
+            head -c 60000 "${out}" 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY" || true
+          if [ -n "${INPUT_BASELINE}" ] && [ "${rc}" != "0" ] && [ "${INPUT_EXIT_CODE}" = "true" ]; then
+            echo "::warning title=segspec::Network dependency changes detected versus baseline ${INPUT_BASELINE}"
+          fi
+        fi
 
         echo "exit-code=${rc}" >> "$GITHUB_OUTPUT"
         echo "output-file=${INPUT_OUTPUT_FILE}" >> "$GITHUB_OUTPUT"
 
-        # Propagate non-zero exits faithfully so consumers see the real status.
+        # Propagate the real status so consumers see success / changes / error.
         exit "${rc}"
