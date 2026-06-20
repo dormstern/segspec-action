@@ -83,14 +83,27 @@ jobs:
           fi
 
   diff-detects-changes:
-    name: diff against baseline detects changes
+    name: diff against baseline detects changes (paid; runs only when a license is configured)
     runs-on: ubuntu-latest
-    if: ${{ secrets.SEGSPEC_LICENSE_KEY != '' }}
     env:
+      # secrets are NOT allowed in a job-level `if`, so gate at the step level
+      # off this env var instead. With no key configured, the paid steps skip
+      # and the job passes.
       SEGSPEC_LICENSE_KEY: ${{ secrets.SEGSPEC_LICENSE_KEY }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - name: Check whether a license is configured
+        id: lic
+        run: |
+          set -euo pipefail
+          if [ -n "${SEGSPEC_LICENSE_KEY:-}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "No SEGSPEC_LICENSE_KEY configured; skipping the paid diff test."
+          fi
       - name: Diff fixture vs. stale baseline (expect non-zero)
+        if: steps.lic.outputs.present == 'true'
         id: diff
         continue-on-error: true
         uses: ./
@@ -99,6 +112,7 @@ jobs:
           baseline: examples/compose-2service/baseline.json
           exit-code: "true"
       - name: Assert diff exit code is 1
+        if: steps.lic.outputs.present == 'true'
         env:
           RC: ${{ steps.diff.outputs.exit-code }}
         run: |

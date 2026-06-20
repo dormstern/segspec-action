@@ -88,7 +88,7 @@ runs:
         fi
 
         if [ -n "${paid_reason}" ] && [ -z "${license}" ]; then
-          echo "::error title=segspec license required::This invocation requires a license (${paid_reason}). Set the license-key input or the SEGSPEC_LICENSE_KEY secret. See https://segspec.dev/pricing"
+          echo "::error title=segspec license required::This invocation requires a license (${paid_reason}). Set the license-key input or the SEGSPEC_LICENSE_KEY secret. Request access: https://github.com/dormstern/segspec-action#tiers"
           exit 78
         fi
         # Only the boolean fact of whether a paid run was requested is exported.

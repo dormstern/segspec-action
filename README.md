@@ -41,7 +41,7 @@ The run output is written to the workflow **job summary** automatically.
 | `baseline:` (diff mode) | | yes |
 | `exit-code: true` (fail on drift) | | yes |
 
-Set the license key as the repo secret `SEGSPEC_LICENSE_KEY`. Get a key at <https://segspec.dev/pricing>.
+Set the license key as the repo secret `SEGSPEC_LICENSE_KEY`. Pro and Enterprise licenses are in early access — [open an issue](https://github.com/dormstern/segspec-action/issues/new) to request one.
 
 ## Inputs
 
