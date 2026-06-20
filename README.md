@@ -34,14 +34,14 @@ The run output is written to the workflow **job summary** automatically.
 
 ## Tiers
 
-| Capability | Free | License required |
+| Capability | Free | Early access |
 |---|---|---|
 | `summary`, `netpol`, `json`, `all`, `default-deny`, `audit`, `cilium` | yes | |
 | `evidence`, `per-service`, `evidence-bundle`, `evidence-bundle-sarif` | | yes |
 | `baseline:` (diff mode) | | yes |
 | `exit-code: true` (fail on drift) | | yes |
 
-Set the license key as the repo secret `SEGSPEC_LICENSE_KEY`. Pro and Enterprise licenses are in early access — [open an issue](https://github.com/dormstern/segspec-action/issues/new) to request one.
+The everyday formats are free and unrestricted. The "early access" formats are not yet self-serve — there's no checkout. To try them, [open an issue](https://github.com/dormstern/segspec-action/issues/new) and we'll issue you a license key (set it as the repo secret `SEGSPEC_LICENSE_KEY`).
 
 ## Inputs
 
@@ -49,8 +49,8 @@ Set the license key as the repo secret `SEGSPEC_LICENSE_KEY`. Pro and Enterprise
 |---|---|---|
 | `path` | `.` | Directory or GitHub URL to analyze. |
 | `format` | `summary` | Output format (see tiers above). |
-| `baseline` | `""` | Path to baseline JSON. When set, runs `segspec diff <baseline> <path>`. Paid. |
-| `exit-code` | `false` | Fail the action when diff detects changes. Paid. Only valid with `baseline`. |
+| `baseline` | `""` | Path to baseline JSON. When set, runs `segspec diff <baseline> <path>`. Early access. |
+| `exit-code` | `false` | Fail the action when diff detects changes. Early access. Only valid with `baseline`. |
 | `license-key` | `""` | Falls back to `env.SEGSPEC_LICENSE_KEY`. |
 | `version` | `latest` | segspec release tag (e.g. `v0.6.0`). |
 | `output-file` | `""` | Write structured output to a file. |
@@ -95,7 +95,7 @@ jobs:
           }
 ```
 
-## Example: fail PRs on network drift (paid)
+## Example: fail PRs on network drift (early access)
 
 Catch an added dependency or a removed one in review, before it reaches the cluster:
 
@@ -127,7 +127,7 @@ segspec analyze . --format json > deps-baseline.json
 git add deps-baseline.json && git commit -m "refresh segspec baseline"
 ```
 
-## Example: publish evidence to the Security tab (paid)
+## Example: publish evidence to the Security tab (early access)
 
 `evidence-bundle-sarif` emits SARIF that GitHub renders as code-scanning alerts, so each network dependency lands in the **Security → Code scanning** tab with the source file and the exact config line behind it.
 
@@ -166,7 +166,7 @@ jobs:
 
 1. Repo settings → Secrets and variables → Actions → New repository secret.
 2. Name: `SEGSPEC_LICENSE_KEY`. Value: your license key.
-3. Pass it via the `env` block as shown in the paid examples.
+3. Pass it via the `env` block as shown in the early-access examples.
 
 The key is read once on the runner and forwarded to the segspec binary via env. Nothing else leaves the runner.
 

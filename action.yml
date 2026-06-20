@@ -24,7 +24,7 @@ inputs:
     required: false
     default: "false"
   license-key:
-    description: License key for paid features. Falls back to env var SEGSPEC_LICENSE_KEY. Required for evidence, per-service, baseline diff, and exit-code.
+    description: License key for early-access features. Falls back to env var SEGSPEC_LICENSE_KEY. Required for evidence, per-service, baseline diff, and exit-code.
     required: false
     default: ""
   version:
@@ -58,7 +58,7 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Resolve paid-tier gates
+    - name: Resolve early-access gates
       id: gate
       shell: bash
       env:
