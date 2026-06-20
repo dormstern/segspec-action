@@ -8,6 +8,10 @@ Static config-to-NetworkPolicy extraction in CI. The Action runs entirely on the
 
 Wraps the [segspec](https://github.com/dormstern/segspec) Go CLI. The binary is downloaded from GitHub Releases and **its SHA-256 is verified against the release `checksums.txt` before execution** — the Action fails closed if the checksum does not match.
 
+![segspec analyzing Sentry self-hosted](https://raw.githubusercontent.com/dormstern/segspec/main/docs/demos/sentry-scan.gif)
+
+> 411 network dependencies across 70+ services in 11ms — each traced to the exact config line that declared it. No agents, no runtime, no observation period.
+
 ## Quick start
 
 ```yaml
@@ -93,6 +97,10 @@ jobs:
 
 ## Example: fail PRs on network drift (paid)
 
+Catch an added dependency or a removed one in review, before it reaches the cluster:
+
+![segspec diff catching a network change](https://raw.githubusercontent.com/dormstern/segspec/main/docs/demos/diff-demo.gif)
+
 ```yaml
 name: netpol drift
 on: [pull_request]
@@ -122,6 +130,8 @@ git add deps-baseline.json && git commit -m "refresh segspec baseline"
 ## Example: publish evidence to the Security tab (paid)
 
 `evidence-bundle-sarif` emits SARIF that GitHub renders as code-scanning alerts, so each network dependency lands in the **Security → Code scanning** tab with its source `file:line`.
+
+![segspec evidence output showing the config line behind each dependency](https://raw.githubusercontent.com/dormstern/segspec/main/docs/demos/evidence-demo.gif)
 
 ```yaml
 name: segspec evidence
