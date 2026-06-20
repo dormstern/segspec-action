@@ -131,9 +131,15 @@ runs:
         if [ "${VERSION}" = "latest" ]; then
           auth=()
           if [ -n "${GH_TOKEN:-}" ]; then auth=(-H "Authorization: Bearer ${GH_TOKEN}"); fi
-          tag="$(curl -fsSL "${auth[@]}" "https://api.github.com/repos/${repo}/releases/latest" \
-                 | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
-          if [ -z "${tag}" ]; then echo "::error::Could not resolve the latest segspec release."; exit 1; fi
+          # Buffer the full API response, then parse with a pure-bash regex.
+          # Piping curl into `grep -m1` makes grep close the pipe early; curl
+          # then fails with a write error (exit 23) and pipefail propagates it.
+          api_resp="$(curl -fsSL "${auth[@]}" "https://api.github.com/repos/${repo}/releases/latest")"
+          if [[ "${api_resp}" =~ \"tag_name\"[[:space:]]*:[[:space:]]*\"([^\"]+)\" ]]; then
+            tag="${BASH_REMATCH[1]}"
+          else
+            echo "::error::Could not resolve the latest segspec release."; exit 1
+          fi
         else
           tag="${VERSION}"
         fi
@@ -148,7 +154,10 @@ runs:
 
         # Fail-closed sha256 verification: a security tool must never exec an
         # unverified download on the consumer's runner.
-        expected="$(grep -E "[[:space:]]${asset}\$" "${tmp}/checksums.txt" | awk '{print $1}' | head -n1)"
+        expected=""
+        while read -r sum name; do
+          if [ "${name}" = "${asset}" ]; then expected="${sum}"; break; fi
+        done < "${tmp}/checksums.txt"
         if [ -z "${expected}" ]; then echo "::error title=segspec checksum missing::No checksum entry for ${asset} in checksums.txt"; exit 1; fi
         if command -v sha256sum >/dev/null 2>&1; then
           actual="$(sha256sum "${tmp}/${asset}" | awk '{print $1}')"
